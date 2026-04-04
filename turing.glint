@@ -1,0 +1,26 @@
+type:
+  Sig
+  Gam
+  Q
+  del
+  q_0
+  q_acc
+  q_rej
+
+operator:
+  =
+  +
+
+control:
+  ->
+
+string:
+  '
+  "
+
+punctuation:
+  ,
+  (
+  )
+  {
+  }
