@@ -1,16 +1,52 @@
-Sig = {'0', '1'}
-Gam = Sig + {'_'}
+// Decides the language B = {w#w | w in {0,1}*}
+
+Sig = {'1', '0', '#'}
+Gam = Sig + {'_', 'x'}
 
 Q = {
-  "S",
-  "ACC",
-  "REJ"
+    "Mv Rt",
+    "Chk Rt",
+    "0 Find #",
+    "1 Find #",
+    "Find 0",
+    "Find 1",
+    "Reset to #",
+    "Reset to Lft",
+    "ACC",
+    "REJ"
 }
 
 del = {
-  ("S", '0') -> ("ACC", '', 'S')
+    ("Mv Rt", 'x') -> ("Mv Rt", '', 'R'),
+    ("Mv Rt", '#') -> ("Chk Rt", '', 'R'),
+    ("Mv Rt", '0') -> ("0 Find #", 'x', 'R'),
+    ("Mv Rt", '1') -> ("1 Find #", 'x', 'R'),
+
+    ("Chk Rt", 'x') -> ("Chk Rt", '', 'R'),
+    ("Chk Rt", '0', '1') -> ("REJ", '', 'S'),
+    ("Chk Rt", '_') -> ("ACC", '', 'R'),
+
+    ("0 Find #", '0', '1') -> ("0 Find #", '', 'R'),
+    ("0 Find #", '#') -> ("Find 0", '', 'R'),
+
+    ("1 Find #", '0', '1') -> ("1 Find #", '', 'R'),
+    ("1 Find #", '#') -> ("Find 1", '', 'R'),
+
+    ("Find 0", 'x') -> ("Find 0", '', 'R'),
+    ("Find 0", '1', '_') -> ("REJ", '', 'S'),
+    ("Find 0", '0') -> ("Reset to #", 'x', 'L'),
+
+    ("Find 1", 'x') -> ("Find 1", '', 'R'),
+    ("Find 1", '0', '_') -> ("REJ", '', 'S'),
+    ("Find 1", '1') -> ("Reset to #", 'x', 'L'),
+
+    ("Reset to #", '0', '1', 'x') -> ("Reset to #", '', 'L'),
+    ("Reset to #", '#') -> ("Reset to Lft", '', 'L'),
+
+    ("Reset to Lft", '0', '1') -> ("Reset to Lft", '', 'L'),
+    ("Reset to Lft", 'x') -> ("Mv Rt", '', 'S')
 }
 
-q_0 = "S"
+q_0 = "Mv Rt"
 q_acc = "ACC"
 q_rej = "REJ"

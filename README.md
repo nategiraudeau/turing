@@ -253,6 +253,8 @@ rules:
 
 - missing transitions are currently treated as reject in simulation (interim behavior)
 
+- line comments are supported with `//` (everything after `//` on that line is ignored)
+
 #### cli stack details
 
 the cli stack will be built on `bun` + `typescript`.
