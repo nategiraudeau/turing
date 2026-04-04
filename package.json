@@ -1,0 +1,22 @@
+{
+  "name": "turing",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "turing": "dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "bun run src/cli.ts",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "chalk": "^5.6.2",
+    "commander": "^14.0.1"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "@types/node": "^24.6.0"
+  }
+}

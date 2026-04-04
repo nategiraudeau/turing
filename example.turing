@@ -1,0 +1,16 @@
+Sig = {'0', '1'}
+Gam = Sig + {'_'}
+
+Q = {
+  "S",
+  "ACC",
+  "REJ"
+}
+
+del = {
+  ("S", '0') -> ("ACC", '', 'S')
+}
+
+q_0 = "S"
+q_acc = "ACC"
+q_rej = "REJ"
