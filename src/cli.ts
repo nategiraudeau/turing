@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { readFileSync, writeFileSync } from "node:fs";
+import { basename, extname } from "node:path";
 import chalk from "chalk";
 import { Command } from "commander";
 import { saveTrace } from "./core/config.js";
@@ -97,7 +98,7 @@ program
   .argument("<machine.turing>")
   .argument("[input]")
   .option("--input <string>", "deprecated alias for positional input")
-  .requiredOption("--out <name.turingconfig>")
+  .option("--out <name.turingconfig>")
   .option("--max-steps <n>", "max simulation steps", parsePositiveInt, 10000)
   .option(
     "--missing-transition <mode>",
@@ -112,10 +113,12 @@ program
     const inputTape = resolveInputTape(inputArg, options.input);
     const machine = loadAndValidate(machinePath);
     const result = simulate(machine, inputTape, options.maxSteps, mode);
-    saveTrace(options.out, result.trace);
+    const defaultOut = `${basename(machinePath, extname(machinePath))}.turingconfig`;
+    const outPath = options.out ?? defaultOut;
+    saveTrace(outPath, result.trace);
     console.log(`status: ${result.status}`);
     console.log(`steps: ${result.steps}`);
-    console.log(`trace written: ${options.out}`);
+    console.log(`trace written: ${outPath}`);
   });
 
 program
