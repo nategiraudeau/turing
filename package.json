@@ -9,6 +9,9 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "dev": "bun run src/cli.ts",
+    "web": "bun run src/web.ts",
+    "web:dev": "vite --config web/vite.config.ts",
+    "web:build": "vite build --config web/vite.config.ts",
     "test": "bun test"
   },
   "dependencies": {
@@ -17,6 +20,8 @@
   },
   "devDependencies": {
     "typescript": "^5.9.3",
-    "@types/node": "^24.6.0"
+    "@types/node": "^24.6.0",
+    "sass": "^1.93.2",
+    "vite": "^7.1.10"
   }
 }

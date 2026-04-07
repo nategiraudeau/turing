@@ -303,15 +303,24 @@ project layout:
 
 cli commands:
 
-- `turing run <machine.turing> --input <string> [--max-steps <n>] [--trace] [--missing-transition reject|stay]`
+- `turing run <machine.turing> [input] [--input <string>] [--max-steps <n>] [--trace] [--missing-transition reject|stay]`
   - runs a simulation and prints result
-  - optional trace printing to terminal
+  - if `[input]` is missing, reads from `--input`, otherwise from piped stdin
 
 - `turing validate <machine.turing>`
   - checks syntax and machine validity
 
-- `turing trace <machine.turing> --input <string> --out <name.turingconfig>`
+- `turing step <machine.turing> [input] [--input <string>] [--max-steps <n>] [--missing-transition reject|stay]`
+  - interactive stepping mode (press enter to advance one tick)
+  - prints configuration at each tick
+
+- `turing clock <machine.turing> [input] [--input <string>] --tick-ms <n> [--max-steps <n>] [--missing-transition reject|stay]`
+  - clocked stepping mode
+  - prints configuration every tick using `--tick-ms`
+
+- `turing trace <machine.turing> [input] [--input <string>] [--out <name.turingconfig>] [--max-steps <n>] [--missing-transition reject|stay]`
   - runs simulation and writes full trace file
+  - default output is `[machine].turingconfig` in current directory when `--out` is omitted
 
 - `turing latex <machine.turing> --out <file.tex>`
   - exports latex code for the machine
@@ -338,4 +347,16 @@ interim implementation defaults:
 
 - missing transition behavior defaults to `reject`
 
-- trace saving is opt-in (`trace` command or explicit output flag)
+- `trace` output path defaults to `[machine].turingconfig`
+
+### 4/6/24 - web dev
+
+here is what needs to be implemented in order:
+
+the entire screen to be considered as a "blank canvas" that the user can use to draw turing machines
+
+- note: javascript/html canvas is not to be used, the app is t be primarily built with plain html css elements
+
+initially, the screen is blank
+
+**clicking anywhere on the screen makes a circle appear there** (needs to be implemented)

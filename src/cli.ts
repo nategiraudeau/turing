@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { readFileSync, writeFileSync } from "node:fs";
 import { basename, extname } from "node:path";
+import { createInterface } from "node:readline/promises";
 import chalk from "chalk";
 import { Command } from "commander";
 import { saveTrace } from "./core/config.js";
@@ -40,6 +41,20 @@ function resolveInputTape(inputArg: string | undefined, inputFlag: string | unde
   throw new Error("missing input tape: provide [input], --input, or pipe stdin");
 }
 
+function printStatus(status: "accept" | "reject" | "timeout"): void {
+  if (status === "accept") {
+    console.log(chalk.green("accept"));
+  } else if (status === "reject") {
+    console.log(chalk.red("reject"));
+  } else {
+    console.log(chalk.yellow("timeout"));
+  }
+}
+
+async function sleep(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 const program = new Command();
 program.name("turing");
 
@@ -64,14 +79,7 @@ program
     const machine = loadAndValidate(machinePath);
     const result = simulate(machine, inputTape, options.maxSteps, mode);
 
-    if (result.status === "accept") {
-      // Keep output simple and colorized when supported.
-      console.log(chalk.green("accept"));
-    } else if (result.status === "reject") {
-      console.log(chalk.red("reject"));
-    } else {
-      console.log(chalk.yellow("timeout"));
-    }
+    printStatus(result.status);
     console.log(`steps: ${result.steps}`);
 
     if (options.trace) {
@@ -79,6 +87,78 @@ program
         console.log(config);
       }
     }
+  });
+
+program
+  .command("step")
+  .argument("<machine.turing>")
+  .argument("[input]")
+  .option("--input <string>", "deprecated alias for positional input")
+  .option("--max-steps <n>", "max simulation steps", parsePositiveInt, 10000)
+  .option(
+    "--missing-transition <mode>",
+    "missing transition behavior",
+    "reject",
+  )
+  .action(async (machinePath: string, inputArg: string | undefined, options) => {
+    const mode = options.missingTransition as MissingTransitionMode;
+    if (mode !== "reject" && mode !== "stay") {
+      throw new Error("missing-transition must be reject or stay");
+    }
+    const inputTape = resolveInputTape(inputArg, options.input);
+    const machine = loadAndValidate(machinePath);
+    const result = simulate(machine, inputTape, options.maxSteps, mode);
+
+    if (result.trace.length === 0) {
+      printStatus(result.status);
+      console.log(`steps: ${result.steps}`);
+      return;
+    }
+
+    console.log(result.trace[0]);
+    if (result.trace.length > 1) {
+      const rl = createInterface({ input: process.stdin, output: process.stdout });
+      for (let i = 1; i < result.trace.length; i += 1) {
+        await rl.question("");
+        console.log(result.trace[i]);
+      }
+      rl.close();
+    }
+
+    printStatus(result.status);
+    console.log(`steps: ${result.steps}`);
+  });
+
+program
+  .command("clock")
+  .argument("<machine.turing>")
+  .argument("[input]")
+  .option("--input <string>", "deprecated alias for positional input")
+  .option("--max-steps <n>", "max simulation steps", parsePositiveInt, 10000)
+  .requiredOption("--tick-ms <n>", "clock tick speed in milliseconds", parsePositiveInt)
+  .option(
+    "--missing-transition <mode>",
+    "missing transition behavior",
+    "reject",
+  )
+  .action(async (machinePath: string, inputArg: string | undefined, options) => {
+    const mode = options.missingTransition as MissingTransitionMode;
+    if (mode !== "reject" && mode !== "stay") {
+      throw new Error("missing-transition must be reject or stay");
+    }
+    const inputTape = resolveInputTape(inputArg, options.input);
+    const machine = loadAndValidate(machinePath);
+    const result = simulate(machine, inputTape, options.maxSteps, mode);
+
+    for (let i = 0; i < result.trace.length; i += 1) {
+      console.log(result.trace[i]);
+      if (i < result.trace.length - 1) {
+        await sleep(options.tickMs);
+      }
+    }
+
+    printStatus(result.status);
+    console.log(`steps: ${result.steps}`);
   });
 
 program

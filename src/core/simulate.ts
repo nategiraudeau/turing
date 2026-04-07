@@ -32,7 +32,7 @@ function renderConfiguration(
     right += readTape(tape, i);
   }
 
-  return `${left}${state}${right}`;
+  return `${left}  ${state}  ${right}`;
 }
 
 export function simulate(
