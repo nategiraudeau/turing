@@ -17,8 +17,6 @@
   --arrow-collider-stroke-width: 20px;
   --state-radius: 22px;
   --node-collider-extra-radius: 10px;
-  --node-collider-fill: rgba(34, 197, 94, 0.38);
-  --node-collider-fill-hover: rgba(239, 68, 68, 0.42);
 }
 
 :root[data-theme='dark'] {
@@ -104,15 +102,14 @@ body {
   stroke-width: var(--arrow-collider-stroke-width);
   stroke-linecap: round;
   stroke-linejoin: round;
-  transition: stroke 0.12s ease;
 
-  // When the wide, invisible collider is hovered, visually highlight the
+  // When the wide collider is hovered, visually highlight the
   // corresponding arrow stroke and head using the draft color.
-  &:hover + .tm-arrow-path {
+  &:hover ~ .tm-arrow-path {
     stroke: var(--arrow-hover);
   }
 
-  &:hover + .tm-arrow-path + .tm-arrow-head {
+  &:hover ~ .tm-arrow-head {
     stroke: var(--arrow-hover);
     fill: var(--arrow-hover);
   }
@@ -120,6 +117,68 @@ body {
   &.is-draft {
     opacity: 0;
     pointer-events: none;
+  }
+}
+
+/* Extra hit area around the label field (see ARROW_LABEL_COLLIDER_INSET); unioned with .tm-arrow-collider. */
+.tm-arrow-label-collider {
+  fill: rgba(0, 0, 0, 0.001);
+  stroke: none;
+  opacity: 0;
+  pointer-events: none;
+
+  &.has-label {
+    /* Must stay non-zero opacity so SVG still delivers pointer events to the fill. */
+    opacity: 1;
+    pointer-events: fill;
+  }
+
+  &.is-draft {
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  &:hover ~ .tm-arrow-path {
+    stroke: var(--arrow-hover);
+  }
+
+  &:hover ~ .tm-arrow-head {
+    stroke: var(--arrow-hover);
+    fill: var(--arrow-hover);
+  }
+}
+
+.tm-canvas.tm-show-colliders {
+  .tm-arrow-collider:not(.is-draft) {
+    stroke: var(--arrow-collider-fill);
+    transition: stroke 0.12s ease;
+
+    &:hover {
+      stroke: var(--arrow-collider-fill-hover);
+    }
+  }
+
+  .tm-arrow-label-collider.has-label:not(.is-draft) {
+    stroke: color-mix(in srgb, var(--dot-fill) 55%, transparent);
+    stroke-width: 1;
+    stroke-dasharray: 4 3;
+  }
+
+  .tm-state-collider {
+    background: radial-gradient(
+      circle closest-side,
+      rgba(34, 197, 94, 0.38) 0%,
+      transparent 72%
+    );
+    transition: background 0.12s ease;
+
+    &:hover {
+      background: radial-gradient(
+        circle closest-side,
+        rgba(239, 68, 68, 0.42) 0%,
+        transparent 72%
+      );
+    }
   }
 }
 
@@ -246,6 +305,119 @@ body {
 
 .tm-shadow-state.is-hover-arrow {
   opacity: 0.15;
+}
+
+/* Transition label (HTML): JS sets left/top to a point on the bezier (see main.ts).
+   transform centers that point horizontally (-50%) and stacks the box above it (-100%),
+   then --arrow-label-extra-lift nudges it slightly further from the shaft (larger = higher). */
+.tm-arrow-label {
+  --arrow-label-translate-x: -50%;
+  --arrow-label-extra-lift: 1.5px;
+  --arrow-label-appear-from-lift: 0.5px;
+  --arrow-label-appear-duration: 0.42s;
+  --arrow-label-appear-ease: cubic-bezier(0.22, 1, 0.36, 1);
+
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 6;
+  display: none;
+  box-sizing: border-box;
+  width: max-content;
+  max-width: min(100vw, 320px);
+  margin: 0;
+  padding: var(--arrow-label-collider-inset, 10px);
+  transform: translate(
+    var(--arrow-label-translate-x),
+    calc(-100% - var(--arrow-label-extra-lift))
+  );
+  cursor: text;
+  pointer-events: auto;
+}
+
+.tm-arrow-label.is-visible {
+  display: block;
+  animation: tm-arrow-label-appear var(--arrow-label-appear-duration) var(--arrow-label-appear-ease)
+    forwards;
+}
+
+.tm-arrow-label-field {
+  --arrow-label-underline-gap: 5px;
+
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 0.03em;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  padding-bottom: var(--arrow-label-underline-gap);
+  border-bottom: 1px solid color-mix(in srgb, var(--dot-stroke) 45%, transparent);
+  transition: border-color 0.15s ease;
+}
+
+.tm-arrow-label-input {
+  box-sizing: border-box;
+  width: 1ch;
+  min-width: 0.55em;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: color-mix(in srgb, var(--dot-stroke) 92%, var(--bg));
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.15;
+  text-align: center;
+  cursor: text;
+  outline: none;
+}
+
+.tm-arrow-label-fmt {
+  opacity: 0.42;
+  color: color-mix(in srgb, var(--dot-stroke) 92%, var(--bg));
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.15;
+  user-select: none;
+  pointer-events: none;
+  flex-shrink: 0;
+}
+
+.tm-arrow-label:focus-within .tm-arrow-label-field {
+  border-bottom-color: color-mix(in srgb, var(--dot-fill) 45%, transparent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tm-arrow-label.is-visible {
+    display: block;
+    animation: none;
+    opacity: 1;
+    transform: translate(
+      var(--arrow-label-translate-x),
+      calc(-100% - var(--arrow-label-extra-lift))
+    );
+  }
+}
+
+@keyframes tm-arrow-label-appear {
+  from {
+    opacity: 0;
+    transform: translate(
+      var(--arrow-label-translate-x),
+      calc(-100% - var(--arrow-label-appear-from-lift))
+    );
+  }
+
+  to {
+    opacity: 1;
+    transform: translate(
+      var(--arrow-label-translate-x),
+      calc(-100% - var(--arrow-label-extra-lift))
+    );
+  }
 }
 
 @keyframes tm-state-appear {
