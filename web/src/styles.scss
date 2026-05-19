@@ -105,6 +105,10 @@ body {
 
   // When the wide collider is hovered, visually highlight the
   // corresponding arrow stroke and head using the draft color.
+  &:hover ~ .tm-arrow-label-leader {
+    stroke: color-mix(in srgb, var(--arrow-hover) 72%, var(--dot-stroke) 28%);
+  }
+
   &:hover ~ .tm-arrow-path {
     stroke: var(--arrow-hover);
   }
@@ -138,6 +142,10 @@ body {
     pointer-events: none;
   }
 
+  &:hover ~ .tm-arrow-label-leader {
+    stroke: color-mix(in srgb, var(--arrow-hover) 72%, var(--dot-stroke) 28%);
+  }
+
   &:hover ~ .tm-arrow-path {
     stroke: var(--arrow-hover);
   }
@@ -145,6 +153,29 @@ body {
   &:hover ~ .tm-arrow-head {
     stroke: var(--arrow-hover);
     fill: var(--arrow-hover);
+  }
+}
+
+/* In-development later feature: connector/leader lines are deliberately disabled in main.ts
+   (`ARROW_LABEL_LEADER_ENABLED = false`). Keep this scaffold quiet until the line design
+   is tested against dense diagrams; production coupling should come from placement and rotation. */
+.tm-arrow-label-leader {
+  fill: none;
+  stroke: color-mix(in srgb, var(--dot-stroke) 45%, transparent);
+  stroke-width: 1px;
+  stroke-linecap: round;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.22s cubic-bezier(0.22, 1, 0.36, 1),
+    stroke 0.15s cubic-bezier(0.22, 1, 0.36, 1);
+
+  &.is-visible {
+    opacity: 1;
+  }
+
+  &.is-draft {
+    opacity: 0;
+    pointer-events: none;
   }
 }
 
@@ -307,12 +338,13 @@ body {
   opacity: 0.15;
 }
 
-/* Transition label (HTML): JS sets left/top to a point on the bezier (see main.ts).
-   transform centers that point horizontally (-50%) and stacks the box above it (-100%),
-   then --arrow-label-extra-lift nudges it slightly further from the shaft (larger = higher). */
+/* Transition label (HTML): JS scores candidate (t-on-curve, side, gap) placements that clear states,
+   labels, and every arrow shaft (see `placeArrowLabel` in main.ts). `transform` parks the wrap's
+   bottom-center at the owning arrow and gives diagonal/curved arrows a small local tilt. */
 .tm-arrow-label {
   --arrow-label-translate-x: -50%;
   --arrow-label-extra-lift: 1.5px;
+  --arrow-label-rotate: 0deg;
   --arrow-label-appear-from-lift: 0.5px;
   --arrow-label-appear-duration: 0.42s;
   --arrow-label-appear-ease: cubic-bezier(0.22, 1, 0.36, 1);
@@ -328,9 +360,11 @@ body {
   margin: 0;
   padding: var(--arrow-label-collider-inset, 10px);
   transform: translate(
-    var(--arrow-label-translate-x),
-    calc(-100% - var(--arrow-label-extra-lift))
-  );
+      var(--arrow-label-translate-x),
+      calc(-100% - var(--arrow-label-extra-lift))
+    )
+    rotate(var(--arrow-label-rotate));
+  transform-origin: 50% 100%;
   cursor: text;
   pointer-events: auto;
 }
@@ -396,9 +430,15 @@ body {
     animation: none;
     opacity: 1;
     transform: translate(
-      var(--arrow-label-translate-x),
-      calc(-100% - var(--arrow-label-extra-lift))
-    );
+        var(--arrow-label-translate-x),
+        calc(-100% - var(--arrow-label-extra-lift))
+      )
+      rotate(var(--arrow-label-rotate));
+  }
+
+  .tm-arrow-label-leader.is-visible {
+    transition: none;
+    opacity: 1;
   }
 }
 
@@ -406,17 +446,19 @@ body {
   from {
     opacity: 0;
     transform: translate(
-      var(--arrow-label-translate-x),
-      calc(-100% - var(--arrow-label-appear-from-lift))
-    );
+        var(--arrow-label-translate-x),
+        calc(-100% - var(--arrow-label-appear-from-lift))
+      )
+      rotate(var(--arrow-label-rotate));
   }
 
   to {
     opacity: 1;
     transform: translate(
-      var(--arrow-label-translate-x),
-      calc(-100% - var(--arrow-label-extra-lift))
-    );
+        var(--arrow-label-translate-x),
+        calc(-100% - var(--arrow-label-extra-lift))
+      )
+      rotate(var(--arrow-label-rotate));
   }
 }
 

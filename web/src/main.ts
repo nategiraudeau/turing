@@ -31,6 +31,7 @@ window.addEventListener('keydown', (event) => {
 
   root.setAttribute('data-theme', next)
   localStorage.setItem(THEME_PREF_KEY, next)
+  requestAnimationFrame(refreshVisibleArrowLabels)
 })
 
 const app = document.getElementById('app')
@@ -70,6 +71,14 @@ const STATE_RADIUS = 22
 /** Diagonal straight only when corridor is open and sides are balanced (both required). */
 const DIAG_STRAIGHT_OPEN_PER_SIDE = 0.00014
 const DIAG_STRAIGHT_MAX_IMBALANCE_RATIO = 0.038
+
+/**
+ * Short diagonals (center distance < this × GRID_SIZE) use a straight shaft when the
+ * attachment segment clears third states (`straightShaftAttachmentsClearThirdStates`). Always
+ * evaluated—does not depend on `curveRoutingRulesEnabled`.
+ */
+const SHORT_DIAG_STRAIGHT_MAX_GRID_MULTIPLIER = 2
+const SHORT_DIAG_STRAIGHT_CLEAR_MARGIN = 6
 
 /** Samples along the chord for crowding (avoids midpoint-only blind spots). */
 const EDGE_CROWD_SAMPLE_TS = [0.18, 0.5, 0.82] as const
@@ -118,15 +127,54 @@ const applyArrowLabelThirdCharUppercase = (value: string): string => {
   return value
 }
 
-/**
- * Where to place the label along the curve: 0 = tail (source), 1 = tip (target).
- * Slightly below 0.5 shifts the field toward the tail so it reads centered on the
- * shaft (the drawn stroke), not the full segment that includes the arrow head.
- */
-const ARROW_LABEL_CURVE_T = 0.44
-
 /** Padding (px) around the label field bbox; adds to the arrow shaft collider when the label is shown. */
 const ARROW_LABEL_COLLIDER_INSET = 10
+
+/**
+ * Dynamic placement scoring: candidates are built from
+ *   (t along the curve) × (side of the curve normal) × (perpendicular gap, px).
+ * The lowest-scoring candidate wins. The defaults at the front are cheapest - they only get rejected
+ * when something is in the way, so a free arrow lands at `t≈0.5, gap≈26`.
+ */
+const ARROW_LABEL_T_OPTIONS = [0.5, 0.44, 0.56, 0.36, 0.64, 0.28, 0.72, 0.2, 0.8] as const
+const ARROW_LABEL_LOOP_T_OPTIONS = [0.5, 0.44, 0.56, 0.38, 0.62] as const
+const ARROW_LABEL_SIDE_OPTIONS = [-1, 1] as const
+const ARROW_LABEL_GAP_OPTIONS = [18, 26, 36, 50, 68, 88] as const
+const ARROW_LABEL_LOOP_GAP_OPTIONS = [10, 16, 24, 36, 52] as const
+
+/** Min reserved label bbox; ensures a 1-char label still reserves room for the eventual 3-char width. */
+const ARROW_LABEL_RESERVED_MIN_W = 64
+const ARROW_LABEL_RESERVED_MIN_H = 30
+
+/** Matches `--arrow-label-extra-lift` in styles.scss. Wrap is translated up by this much. */
+const ARROW_LABEL_EXTRA_LIFT_PX = 1.5
+
+/** Penalty buffers for each obstacle class (px beyond the contour where score starts climbing). */
+const ARROW_LABEL_STATE_BUFFER = 8
+const ARROW_LABEL_FROMTO_BUFFER = 4
+const ARROW_LABEL_LABEL_BUFFER = 8
+const ARROW_LABEL_EDGE_BUFFER = 8
+
+/** The label may tilt a little toward its owning arrow, but never enough to feel like rotated UI chrome. */
+const ARROW_LABEL_MAX_ROTATION_DEG = 18
+const ARROW_LABEL_ROTATION_DEADBAND_DEG = 4
+
+/**
+ * In-development later feature: connector/leader lines are intentionally disabled for now.
+ * The production behavior should be self-evident without them: proximity, local rotation, and obstacle-aware
+ * placement must make ownership clear even in busy diagrams. Keep this false until the line design is tested.
+ */
+const ARROW_LABEL_LEADER_ENABLED = false
+
+/** Bezier sampling for "nearest owning arrow" and arrow-shaft overlap tests. */
+const ARROW_LABEL_NEAREST_SAMPLES = 48
+const ARROW_LABEL_ARROW_SAMPLES = 28
+
+/** In-development leader-line constants. Kept with the disabled feature for later iteration. */
+const ARROW_LABEL_LEADER_HANDLE_FRAC = 0.45
+const ARROW_LABEL_LEADER_HANDLE_MIN = 8
+const ARROW_LABEL_LEADER_HANDLE_MAX = 32
+const ARROW_LABEL_LEADER_MIN_LEN = 3
 
 app.style.setProperty('--arrow-label-collider-inset', `${ARROW_LABEL_COLLIDER_INSET}px`)
 
@@ -173,6 +221,18 @@ type ArrowShape = {
   labelCollider: SVGRectElement
   path: SVGPathElement
   head: SVGPolygonElement
+  /** Cubic bezier that re-ties an offset label to its arrow: underline → nearest point on shaft. */
+  labelLeader: SVGPathElement
+}
+
+/** Anchor + reserved size of a placed label. Anchor is where wrap.style.left/top go; after the
+ *  `translate(-50%, -100% - lift)` transform, the wrap's bottom-center lands at the anchor. */
+type LabelPlacement = {
+  anchorX: number
+  anchorY: number
+  rotateDeg: number
+  wrapW: number
+  wrapH: number
 }
 
 type StoredArrow = {
@@ -188,6 +248,8 @@ type StoredArrow = {
   /** Three one-character cells; displayed with → and , between (see `.tm-arrow-label-fmt`). */
   labelInputs: [HTMLInputElement, HTMLInputElement, HTMLInputElement] | null
   labelVisible: boolean
+  /** Cached: where the wrap sits (anchor) and its reserved size. Set by `placeArrowLabel`. */
+  labelPlacement: LabelPlacement | null
 }
 
 type DraftArrow = {
@@ -305,11 +367,14 @@ const createArrowShape = (): ArrowShape => {
   path.classList.add('tm-arrow-path')
   const head = document.createElementNS(SVG_NS, 'polygon')
   head.classList.add('tm-arrow-head')
+  const labelLeader = document.createElementNS(SVG_NS, 'path')
+  labelLeader.classList.add('tm-arrow-label-leader')
   arrowLayer.appendChild(collider)
   arrowLayer.appendChild(labelCollider)
   arrowLayer.appendChild(path)
   arrowLayer.appendChild(head)
-  return { collider, labelCollider, path, head }
+  arrowLayer.appendChild(labelLeader)
+  return { collider, labelCollider, path, head, labelLeader }
 }
 
 const removeArrowShape = (shape: ArrowShape) => {
@@ -317,6 +382,7 @@ const removeArrowShape = (shape: ArrowShape) => {
   shape.labelCollider.remove()
   shape.path.remove()
   shape.head.remove()
+  shape.labelLeader.remove()
 }
 
 const clamp01 = (t: number) => Math.min(1, Math.max(0, t))
@@ -343,11 +409,486 @@ const cubicBezierPoint = (curve: ArrowCurve, tRaw: number): Point => {
   }
 }
 
+const cubicBezierTangent = (curve: ArrowCurve, tRaw: number): Point => {
+  const t = clamp01(tRaw)
+  const u = 1 - t
+  return {
+    x:
+      3 * u * u * (curve.c1.x - curve.start.x) +
+      6 * u * t * (curve.c2.x - curve.c1.x) +
+      3 * t * t * (curve.end.x - curve.c2.x),
+    y:
+      3 * u * u * (curve.c1.y - curve.start.y) +
+      6 * u * t * (curve.c2.y - curve.c1.y) +
+      3 * t * t * (curve.end.y - curve.c2.y),
+  }
+}
+
+/** Unit-length normal at curve(t). Falls back to (0,-1) if the tangent is degenerate. */
+const curveUnitNormal = (curve: ArrowCurve, t: number): Point => {
+  const tan = cubicBezierTangent(curve, t)
+  const m = Math.hypot(tan.x, tan.y)
+  if (m < 0.001) return { x: 0, y: -1 }
+  return { x: -tan.y / m, y: tan.x / m }
+}
+
+/** Coarse sample + golden-section refine for the closest point on a cubic to `p`. */
+const nearestPointOnCubic = (
+  curve: ArrowCurve,
+  p: Point,
+): { point: Point; t: number; tangent: Point } => {
+  let bestT = 0
+  let bestD2 = Infinity
+  for (let i = 0; i <= ARROW_LABEL_NEAREST_SAMPLES; i++) {
+    const t = i / ARROW_LABEL_NEAREST_SAMPLES
+    const pt = cubicBezierPoint(curve, t)
+    const d2 = (pt.x - p.x) ** 2 + (pt.y - p.y) ** 2
+    if (d2 < bestD2) {
+      bestD2 = d2
+      bestT = t
+    }
+  }
+  let lo = Math.max(0, bestT - 1 / ARROW_LABEL_NEAREST_SAMPLES)
+  let hi = Math.min(1, bestT + 1 / ARROW_LABEL_NEAREST_SAMPLES)
+  for (let i = 0; i < 16; i++) {
+    const a = lo + (hi - lo) * 0.382
+    const b = lo + (hi - lo) * 0.618
+    const pa = cubicBezierPoint(curve, a)
+    const pb = cubicBezierPoint(curve, b)
+    const da = (pa.x - p.x) ** 2 + (pa.y - p.y) ** 2
+    const db = (pb.x - p.x) ** 2 + (pb.y - p.y) ** 2
+    if (da < db) hi = b
+    else lo = a
+  }
+  const t = (lo + hi) / 2
+  return {
+    point: cubicBezierPoint(curve, t),
+    t,
+    tangent: cubicBezierTangent(curve, t),
+  }
+}
+
+type LabelRect = { l: number; t: number; r: number; b: number }
+
+type LabelCandidate = LabelPlacement & {
+  bbox: LabelRect
+  center: Point
+  curvePoint: Point
+  curveT: number
+  gap: number
+  isLoop: boolean
+  side: 1 | -1
+}
+
+const distancePointToRect = (p: Point, rect: LabelRect): number => {
+  const dx = Math.max(rect.l - p.x, 0, p.x - rect.r)
+  const dy = Math.max(rect.t - p.y, 0, p.y - rect.b)
+  return Math.hypot(dx, dy)
+}
+
+const pointInsideRect = (p: Point, rect: LabelRect, pad = 0): boolean =>
+  p.x >= rect.l - pad &&
+  p.x <= rect.r + pad &&
+  p.y >= rect.t - pad &&
+  p.y <= rect.b + pad
+
+const rectsIntersect = (a: LabelRect, b: LabelRect, buffer = 0): boolean =>
+  !(a.r + buffer < b.l || b.r + buffer < a.l || a.b + buffer < b.t || b.b + buffer < a.t)
+
+const rectIntersectionArea = (a: LabelRect, b: LabelRect): number => {
+  const w = Math.max(0, Math.min(a.r, b.r) - Math.max(a.l, b.l))
+  const h = Math.max(0, Math.min(a.b, b.b) - Math.max(a.t, b.t))
+  return w * h
+}
+
+const orientation = (a: Point, b: Point, c: Point): number =>
+  (b.y - a.y) * (c.x - b.x) - (b.x - a.x) * (c.y - b.y)
+
+const rangesOverlap = (a: number, b: number, c: number, d: number): boolean =>
+  Math.max(Math.min(a, b), Math.min(c, d)) <= Math.min(Math.max(a, b), Math.max(c, d))
+
+const segmentsIntersect = (a: Point, b: Point, c: Point, d: Point): boolean => {
+  const o1 = orientation(a, b, c)
+  const o2 = orientation(a, b, d)
+  const o3 = orientation(c, d, a)
+  const o4 = orientation(c, d, b)
+  if (Math.abs(o1) < 1e-8 && Math.abs(o2) < 1e-8 && Math.abs(o3) < 1e-8 && Math.abs(o4) < 1e-8) {
+    return rangesOverlap(a.x, b.x, c.x, d.x) && rangesOverlap(a.y, b.y, c.y, d.y)
+  }
+  return o1 * o2 <= 0 && o3 * o4 <= 0
+}
+
+const segmentIntersectsRect = (a: Point, b: Point, rect: LabelRect): boolean => {
+  if (pointInsideRect(a, rect) || pointInsideRect(b, rect)) return true
+  const tl = { x: rect.l, y: rect.t }
+  const tr = { x: rect.r, y: rect.t }
+  const br = { x: rect.r, y: rect.b }
+  const bl = { x: rect.l, y: rect.b }
+  return (
+    segmentsIntersect(a, b, tl, tr) ||
+    segmentsIntersect(a, b, tr, br) ||
+    segmentsIntersect(a, b, br, bl) ||
+    segmentsIntersect(a, b, bl, tl)
+  )
+}
+
+const normalizeLabelAngleDeg = (rawDeg: number): number => {
+  let deg = rawDeg
+  while (deg > 90) deg -= 180
+  while (deg < -90) deg += 180
+  if (Math.abs(deg) < ARROW_LABEL_ROTATION_DEADBAND_DEG) return 0
+  return clamp(deg, -ARROW_LABEL_MAX_ROTATION_DEG, ARROW_LABEL_MAX_ROTATION_DEG)
+}
+
+const labelGeometryForPlacement = (
+  anchorX: number,
+  anchorY: number,
+  wrapW: number,
+  wrapH: number,
+  rotateDeg: number,
+): { bbox: LabelRect; center: Point } => {
+  const angle = (rotateDeg * Math.PI) / 180
+  const cos = Math.cos(angle)
+  const sin = Math.sin(angle)
+  const pivot = { x: anchorX, y: anchorY - ARROW_LABEL_EXTRA_LIFT_PX }
+  const localCorners = [
+    { x: -wrapW / 2, y: -wrapH },
+    { x: wrapW / 2, y: -wrapH },
+    { x: wrapW / 2, y: 0 },
+    { x: -wrapW / 2, y: 0 },
+  ]
+  const corners = localCorners.map((p) => ({
+    x: pivot.x + p.x * cos - p.y * sin,
+    y: pivot.y + p.x * sin + p.y * cos,
+  }))
+  const xs = corners.map((p) => p.x)
+  const ys = corners.map((p) => p.y)
+  return {
+    bbox: {
+      l: Math.min(...xs),
+      t: Math.min(...ys),
+      r: Math.max(...xs),
+      b: Math.max(...ys),
+    },
+    center: {
+      x: corners.reduce((sum, p) => sum + p.x, 0) / corners.length,
+      y: corners.reduce((sum, p) => sum + p.y, 0) / corners.length,
+    },
+  }
+}
+
+/** Reconstructs another label's reserved bbox from its cached placement (no DOM read). */
+const getCachedLabelRect = (other: StoredArrow): LabelRect | null => {
+  if (!other.labelVisible || !other.labelPlacement) return null
+  const { anchorX, anchorY, wrapW, wrapH, rotateDeg } = other.labelPlacement
+  return labelGeometryForPlacement(anchorX, anchorY, wrapW, wrapH, rotateDeg).bbox
+}
+
+const distanceToCurveSamples = (curve: ArrowCurve, p: Point): number => {
+  let best = Infinity
+  for (let i = 0; i <= ARROW_LABEL_ARROW_SAMPLES; i++) {
+    const t = i / ARROW_LABEL_ARROW_SAMPLES
+    const pt = cubicBezierPoint(curve, t)
+    best = Math.min(best, Math.hypot(pt.x - p.x, pt.y - p.y))
+  }
+  return best
+}
+
+const isLoopArrow = (arrow: StoredArrow) => arrow.fromId === arrow.toId
+
+const loopOutwardUnit = (arrow: StoredArrow, curvePoint: Point, fallback: Point): Point => {
+  const state = getStateById(arrow.fromId)
+  if (!(state instanceof HTMLElement)) return fallback
+  const c = getStateCenter(state)
+  const dx = curvePoint.x - c.x
+  const dy = curvePoint.y - c.y
+  const m = Math.hypot(dx, dy)
+  return m > 0.001 ? { x: dx / m, y: dy / m } : fallback
+}
+
+const buildLabelCandidate = (
+  arrow: StoredArrow,
+  wrapW: number,
+  wrapH: number,
+  t: number,
+  side: 1 | -1,
+  gap: number,
+): LabelCandidate => {
+  const curvePoint = cubicBezierPoint(arrow.targetCurve, t)
+  const normal = curveUnitNormal(arrow.targetCurve, t)
+  const isLoop = isLoopArrow(arrow)
+  const placementVector = isLoop ? loopOutwardUnit(arrow, curvePoint, normal) : normal
+  const underlineX = curvePoint.x + placementVector.x * side * gap
+  const underlineY = curvePoint.y + placementVector.y * side * gap
+  const anchorX = underlineX
+  const anchorY = underlineY + ARROW_LABEL_EXTRA_LIFT_PX + ARROW_LABEL_COLLIDER_INSET
+  const nearest = nearestPointOnCubic(arrow.targetCurve, { x: underlineX, y: underlineY })
+  const rotateDeg = normalizeLabelAngleDeg((Math.atan2(nearest.tangent.y, nearest.tangent.x) * 180) / Math.PI)
+  const { bbox, center } = labelGeometryForPlacement(anchorX, anchorY, wrapW, wrapH, rotateDeg)
+  return {
+    anchorX,
+    anchorY,
+    rotateDeg,
+    wrapW,
+    wrapH,
+    bbox,
+    center,
+    curvePoint,
+    curveT: t,
+    gap,
+    isLoop,
+    side,
+  }
+}
+
+const clampLabelCandidateToApp = (
+  candidate: LabelCandidate,
+  appW: number,
+  appH: number,
+): LabelCandidate => {
+  let dx = 0
+  let dy = 0
+  if (candidate.bbox.l < ARROW_LABEL_EDGE_BUFFER) dx = ARROW_LABEL_EDGE_BUFFER - candidate.bbox.l
+  if (candidate.bbox.r > appW - ARROW_LABEL_EDGE_BUFFER) {
+    dx = Math.min(dx, appW - ARROW_LABEL_EDGE_BUFFER - candidate.bbox.r)
+  }
+  if (candidate.bbox.t < ARROW_LABEL_EDGE_BUFFER) dy = ARROW_LABEL_EDGE_BUFFER - candidate.bbox.t
+  if (candidate.bbox.b > appH - ARROW_LABEL_EDGE_BUFFER) {
+    dy = Math.min(dy, appH - ARROW_LABEL_EDGE_BUFFER - candidate.bbox.b)
+  }
+  if (Math.abs(dx) < 0.001 && Math.abs(dy) < 0.001) return candidate
+
+  const anchorX = candidate.anchorX + dx
+  const anchorY = candidate.anchorY + dy
+  const { bbox, center } = labelGeometryForPlacement(
+    anchorX,
+    anchorY,
+    candidate.wrapW,
+    candidate.wrapH,
+    candidate.rotateDeg,
+  )
+  return {
+    ...candidate,
+    anchorX,
+    anchorY,
+    bbox,
+    center,
+  }
+}
+
+const scoreLabelCandidate = (
+  arrow: StoredArrow,
+  candidate: LabelCandidate,
+  appW: number,
+  appH: number,
+): number => {
+  const { bbox, center, curveT, gap, isLoop, side } = candidate
+  let score = 0
+
+  // 1. Canvas edges (hard: never let the label clip off-screen).
+  const eb = ARROW_LABEL_EDGE_BUFFER
+  if (bbox.l < eb) score += (eb - bbox.l) * 100
+  if (bbox.t < eb) score += (eb - bbox.t) * 100
+  if (bbox.r > appW - eb) score += (bbox.r - (appW - eb)) * 100
+  if (bbox.b > appH - eb) score += (bbox.b - (appH - eb)) * 100
+
+  // 2. State circles. Endpoint states get a lighter buffer; self-loops keep the apex legible.
+  for (const stateEl of app.querySelectorAll('.tm-state')) {
+    if (!(stateEl instanceof HTMLElement)) continue
+    const c = getStateCenter(stateEl)
+    const sid = getStateId(stateEl)
+    const isEndpoint = sid === arrow.fromId || sid === arrow.toId
+    const buffer = isEndpoint ? ARROW_LABEL_FROMTO_BUFFER : ARROW_LABEL_STATE_BUFFER
+    const d = distancePointToRect(c, bbox)
+    const radius = STATE_RADIUS + buffer
+    if (d < radius) {
+      const over = radius - d
+      score += over * (isEndpoint ? (isLoop ? 24 : 2) : 16)
+    }
+  }
+
+  // 3. Own arrow and other arrows must not pass under the input. Other nearby arrows also erode ownership.
+  const ownerDistance = distanceToCurveSamples(arrow.targetCurve, center)
+  for (const other of arrows) {
+    const isOwner = other === arrow
+    let arrowHitsLabel = 0
+    let arrowNearLabel = 0
+    let prev = cubicBezierPoint(other.targetCurve, 0)
+    for (let i = 1; i <= ARROW_LABEL_ARROW_SAMPLES; i++) {
+      const t = i / ARROW_LABEL_ARROW_SAMPLES
+      const pt = cubicBezierPoint(other.targetCurve, t)
+      if (segmentIntersectsRect(prev, pt, bbox) || pointInsideRect(pt, bbox, 1)) arrowHitsLabel += 1
+      else {
+        const d = distancePointToRect(pt, bbox)
+        if (d < 8) arrowNearLabel += 8 - d
+      }
+      prev = pt
+    }
+    if (isOwner) {
+      score += arrowHitsLabel * 55 + arrowNearLabel * 4
+      continue
+    }
+    score += arrowHitsLabel * 85 + arrowNearLabel * 7
+    const otherDistance = distanceToCurveSamples(other.targetCurve, center)
+    if (otherDistance < ownerDistance + 10) {
+      score += (ownerDistance + 10 - otherDistance) * 4
+    }
+  }
+
+  // 4. Other visible labels.
+  for (const other of arrows) {
+    if (other === arrow) continue
+    const obox = getCachedLabelRect(other)
+    if (!obox) continue
+    if (rectsIntersect(obox, bbox, ARROW_LABEL_LABEL_BUFFER)) {
+      score += 22 + rectIntersectionArea(obox, bbox) * 0.08
+    }
+  }
+
+  // 5. Soft preferences: close to its arrow, near curve midpoint, and only gently rotated.
+  score += gap * (isLoop ? 0.04 : 0.09)
+  score += Math.abs(curveT - 0.5) * (isLoop ? 3 : 8)
+  score += Math.abs(candidate.rotateDeg) * 0.12
+  if (isLoop && side < 0) score += 20
+
+  return score
+}
+
+/** Picks the lowest-cost placement, writes anchor/rotation to CSS, and caches the choice. */
+const placeArrowLabel = (arrow: StoredArrow) => {
+  if (!arrow.labelWrap || !arrow.labelVisible) return
+
+  const previousRotate = arrow.labelWrap.style.getPropertyValue('--arrow-label-rotate')
+  arrow.labelWrap.style.setProperty('--arrow-label-rotate', '0deg')
+  const wrapRect = arrow.labelWrap.getBoundingClientRect()
+  if (previousRotate) arrow.labelWrap.style.setProperty('--arrow-label-rotate', previousRotate)
+  const wrapW = Math.max(wrapRect.width, ARROW_LABEL_RESERVED_MIN_W)
+  const wrapH = Math.max(wrapRect.height, ARROW_LABEL_RESERVED_MIN_H)
+
+  const appRect = app.getBoundingClientRect()
+  const appW = appRect.width
+  const appH = appRect.height
+
+  let best: { candidate: LabelCandidate; score: number } | null = null
+  const tOptions = isLoopArrow(arrow) ? ARROW_LABEL_LOOP_T_OPTIONS : ARROW_LABEL_T_OPTIONS
+  const gapOptions = isLoopArrow(arrow) ? ARROW_LABEL_LOOP_GAP_OPTIONS : ARROW_LABEL_GAP_OPTIONS
+  const sideOptions = isLoopArrow(arrow) ? ([1, -1] as const) : ARROW_LABEL_SIDE_OPTIONS
+
+  for (const t of tOptions) {
+    for (const side of sideOptions) {
+      for (const gap of gapOptions) {
+        const candidate = clampLabelCandidateToApp(
+          buildLabelCandidate(arrow, wrapW, wrapH, t, side, gap),
+          appW,
+          appH,
+        )
+        const score = scoreLabelCandidate(arrow, candidate, appW, appH)
+        if (best === null || score < best.score) best = { candidate, score }
+      }
+    }
+  }
+
+  if (!best) return
+
+  const { candidate } = best
+  arrow.labelPlacement = {
+    anchorX: candidate.anchorX,
+    anchorY: candidate.anchorY,
+    rotateDeg: candidate.rotateDeg,
+    wrapW,
+    wrapH,
+  }
+  arrow.labelWrap.style.left = `${candidate.anchorX}px`
+  arrow.labelWrap.style.top = `${candidate.anchorY}px`
+  arrow.labelWrap.style.setProperty('--arrow-label-rotate', `${candidate.rotateDeg}deg`)
+  updateArrowLabelLeader(arrow)
+}
+
+/**
+ * Draws the leader: a cubic bezier whose tangent is perpendicular to the underline at p0 and
+ * perpendicular to the arrow's local tangent at p3 (nearest point on `currentCurve`). The
+ * underline endpoint slides horizontally along the underline toward the arrow, so the leader
+ * never reads as crossing the field. Re-run each animation frame so the arrow-side endpoint
+ * tracks the animated `currentCurve`.
+ */
+const updateArrowLabelLeader = (arrow: StoredArrow) => {
+  const leader = arrow.shape.labelLeader
+  if (!ARROW_LABEL_LEADER_ENABLED) {
+    leader.classList.remove('is-visible')
+    leader.removeAttribute('d')
+    return
+  }
+
+  const placement = arrow.labelPlacement
+  if (!arrow.labelVisible || !placement) {
+    leader.classList.remove('is-visible')
+    leader.removeAttribute('d')
+    return
+  }
+
+  const { anchorX, anchorY, wrapW } = placement
+  const wrapPad = ARROW_LABEL_COLLIDER_INSET
+  // Underline = bottom edge of the field, which is the wrap's bottom minus its padding.
+  const underlineY = anchorY - ARROW_LABEL_EXTRA_LIFT_PX - wrapPad
+  const fieldLeftX = anchorX - wrapW / 2 + wrapPad
+  const fieldRightX = anchorX + wrapW / 2 - wrapPad
+
+  const first = nearestPointOnCubic(arrow.currentCurve, { x: anchorX, y: underlineY })
+  const attachX = clamp(first.point.x, fieldLeftX + 2, fieldRightX - 2)
+  const refined = nearestPointOnCubic(arrow.currentCurve, { x: attachX, y: underlineY })
+
+  const p0 = { x: attachX, y: underlineY }
+  const p3 = refined.point
+  const dx = p3.x - p0.x
+  const dy = p3.y - p0.y
+  const len = Math.hypot(dx, dy)
+  if (len < ARROW_LABEL_LEADER_MIN_LEN) {
+    leader.classList.remove('is-visible')
+    leader.removeAttribute('d')
+    return
+  }
+
+  // Underline normal points toward the arrow. The underline is horizontal in screen space.
+  const ulSign = dy >= 0 ? 1 : -1
+  const ulNormal: Point = { x: 0, y: ulSign }
+
+  // Arrow normal at p3, flipped to point toward p0 (out of the arrow into the label).
+  const tan = refined.tangent
+  const tMag = Math.hypot(tan.x, tan.y)
+  let arrowNormal: Point =
+    tMag > 0.001 ? { x: -tan.y / tMag, y: tan.x / tMag } : { x: 0, y: -ulSign }
+  if ((p0.x - p3.x) * arrowNormal.x + (p0.y - p3.y) * arrowNormal.y < 0) {
+    arrowNormal = { x: -arrowNormal.x, y: -arrowNormal.y }
+  }
+
+  const handle = clamp(
+    len * ARROW_LABEL_LEADER_HANDLE_FRAC,
+    ARROW_LABEL_LEADER_HANDLE_MIN,
+    ARROW_LABEL_LEADER_HANDLE_MAX,
+  )
+  const p1 = { x: p0.x + ulNormal.x * handle, y: p0.y + ulNormal.y * handle }
+  const p2 = { x: p3.x + arrowNormal.x * handle, y: p3.y + arrowNormal.y * handle }
+
+  leader.setAttribute(
+    'd',
+    `M ${p0.x} ${p0.y} C ${p1.x} ${p1.y} ${p2.x} ${p2.y} ${p3.x} ${p3.y}`,
+  )
+  leader.dataset.arrowFrom = arrow.fromId
+  leader.dataset.arrowTo = arrow.toId
+  leader.classList.add('is-visible')
+}
+
+/** Per-frame cheap update: reuse cached placement, only re-trace the leader against `currentCurve`. */
 const positionArrowLabel = (arrow: StoredArrow) => {
   if (!arrow.labelWrap || !arrow.labelVisible) return
-  const mid = cubicBezierPoint(arrow.targetCurve, ARROW_LABEL_CURVE_T)
-  arrow.labelWrap.style.left = `${mid.x}px`
-  arrow.labelWrap.style.top = `${mid.y}px`
+  if (!arrow.labelPlacement) {
+    placeArrowLabel(arrow)
+    return
+  }
+  arrow.labelWrap.style.left = `${arrow.labelPlacement.anchorX}px`
+  arrow.labelWrap.style.top = `${arrow.labelPlacement.anchorY}px`
+  arrow.labelWrap.style.setProperty('--arrow-label-rotate', `${arrow.labelPlacement.rotateDeg}deg`)
+  updateArrowLabelLeader(arrow)
 }
 
 const syncArrowLabelFromInputs = (arrow: StoredArrow) => {
@@ -414,15 +955,30 @@ const ensureArrowLabelInput = (arrow: StoredArrow) => {
     el.autocomplete = 'off'
     el.spellcheck = false
     el.dataset.index = String(index)
-    el.addEventListener('input', () => {
+
+    const normalizeCellAndSync = (): string => {
       let v = el.value
       if (v.length > 1) v = v.slice(-1)
       el.value = v
       syncArrowLabelFromInputs(arrow)
+      return v
+    }
+
+    const maybeAdvanceToNext = (v: string) => {
       if (v.length === 1 && index < ARROW_LABEL_MAX_LEN - 1) {
         arrow.labelInputs![index + 1].focus()
       }
+    }
+
+    el.addEventListener('input', (ev) => {
+      if ((ev as InputEvent).isComposing) return
+      maybeAdvanceToNext(normalizeCellAndSync())
     })
+
+    el.addEventListener('compositionend', () => {
+      maybeAdvanceToNext(normalizeCellAndSync())
+    })
+
     el.addEventListener('keydown', (e) => {
       const ins = arrow.labelInputs
       if (!ins) return
@@ -447,7 +1003,7 @@ const ensureArrowLabelInput = (arrow: StoredArrow) => {
           e.preventDefault()
           el.value = ''
           syncArrowLabelFromInputs(arrow)
-          focusPrevCaretEnd()
+          requestAnimationFrame(() => el.setSelectionRange(0, 0))
           return
         }
       }
@@ -486,6 +1042,22 @@ const ensureArrowLabelInput = (arrow: StoredArrow) => {
 
   wrap.addEventListener('pointerdown', (e) => {
     if (e.target instanceof HTMLInputElement && e.target.classList.contains('tm-arrow-label-input')) return
+    const stack =
+      typeof document.elementsFromPoint === 'function'
+        ? document.elementsFromPoint(e.clientX, e.clientY)
+        : []
+    const hit = stack.find(
+      (node): node is HTMLInputElement =>
+        node instanceof HTMLInputElement && node.classList.contains('tm-arrow-label-input'),
+    )
+    if (hit) {
+      hit.focus()
+      requestAnimationFrame(() => {
+        const len = hit.value.length
+        hit.setSelectionRange(len, len)
+      })
+      return
+    }
     focusArrowLabelField(arrow)
   })
 
@@ -498,7 +1070,7 @@ const showArrowLabel = (arrow: StoredArrow) => {
   ensureArrowLabelInput(arrow)
   arrow.labelVisible = true
   arrow.labelWrap?.classList.add('is-visible')
-  positionArrowLabel(arrow)
+  placeArrowLabel(arrow)
   if (arrow.labelWrap instanceof HTMLElement) {
     arrow.labelWrap.dataset.arrowFrom = arrow.fromId
     arrow.labelWrap.dataset.arrowTo = arrow.toId
@@ -508,10 +1080,14 @@ const showArrowLabel = (arrow: StoredArrow) => {
 }
 
 const removeArrowLabelEl = (arrow: StoredArrow) => {
+  arrow.labelWrap?.style.removeProperty('--arrow-label-rotate')
   arrow.labelWrap?.remove()
   arrow.labelWrap = null
   arrow.labelInputs = null
   arrow.labelVisible = false
+  arrow.labelPlacement = null
+  arrow.shape.labelLeader.classList.remove('is-visible')
+  arrow.shape.labelLeader.removeAttribute('d')
   updateLabelColliderRect(arrow)
 }
 
@@ -1177,6 +1753,26 @@ const getOptimalLoopAngle = (stateId: string, center: Point): number => {
   return bestGap.center
 }
 
+/** Straight attachment segment clears every third state's outline (minimal gap). */
+const straightShaftAttachmentsClearThirdStates = (
+  fromId: string,
+  toId: string,
+  fromCenter: Point,
+  toCenter: Point,
+): boolean => {
+  const start = pointOnCircle(fromCenter, toCenter, STATE_RADIUS)
+  const end = pointOnCircle(toCenter, fromCenter, STATE_RADIUS)
+  const minDistAllow = STATE_RADIUS + SHORT_DIAG_STRAIGHT_CLEAR_MARGIN
+  for (const el of app.querySelectorAll('.tm-state')) {
+    if (!(el instanceof HTMLElement)) continue
+    const id = getStateId(el)
+    if (id === fromId || id === toId) continue
+    const c = getStateCenter(el)
+    if (pointToSegmentDist(c, start, end).dist < minDistAllow) return false
+  }
+  return true
+}
+
 const buildFinalCurve = (
   fromId: string,
   toId: string,
@@ -1202,6 +1798,26 @@ const buildFinalCurve = (
   const dy = toCenter.y - fromCenter.y
 
   if (aligned) {
+    const dodgeNormalOffset = obstacleAvoidanceEnabled
+      ? computeDodgeNormalOffset(
+          fromId,
+          toId,
+          fromCenter,
+          toCenter,
+          'straight',
+          1,
+        )
+      : 0
+    return buildStraightCurve(fromCenter, toCenter, dodgeNormalOffset)
+  }
+
+  const chordLenCenters = Math.hypot(dx, dy)
+  /** Default-on: short diagonal with a clear straight shaft prefers straight regardless of curve heuristics. */
+  const shortDiagonalStraightEligible =
+    chordLenCenters < SHORT_DIAG_STRAIGHT_MAX_GRID_MULTIPLIER * GRID_SIZE &&
+    straightShaftAttachmentsClearThirdStates(fromId, toId, fromCenter, toCenter)
+
+  if (shortDiagonalStraightEligible) {
     const dodgeNormalOffset = obstacleAvoidanceEnabled
       ? computeDodgeNormalOffset(
           fromId,
@@ -1307,10 +1923,36 @@ const setStoredArrowTargets = (virtualArrow: { fromId: string; toId: string } | 
       diagramCentroid,
     )
   })
+  repositionVisibleArrowLabels()
+}
+
+const placementsClose = (a: LabelPlacement | null, b: LabelPlacement | null): boolean => {
+  if (!a || !b) return a === b
+  return (
+    Math.abs(a.anchorX - b.anchorX) < 0.5 &&
+    Math.abs(a.anchorY - b.anchorY) < 0.5 &&
+    Math.abs(a.rotateDeg - b.rotateDeg) < 0.5 &&
+    Math.abs(a.wrapW - b.wrapW) < 0.5 &&
+    Math.abs(a.wrapH - b.wrapH) < 0.5
+  )
+}
+
+const repositionVisibleArrowLabels = (maxPasses = 4) => {
+  for (let pass = 0; pass < maxPasses; pass++) {
+    let changed = false
+    arrows.forEach((a) => {
+      if (!a.labelVisible) return
+      const before = a.labelPlacement ? { ...a.labelPlacement } : null
+      placeArrowLabel(a)
+      if (!placementsClose(before, a.labelPlacement)) changed = true
+    })
+    if (!changed) return
+  }
 }
 
 const rerenderStoredArrows = () => {
   setStoredArrowTargets()
+  repositionVisibleArrowLabels()
   arrows.forEach(renderStoredArrow)
 }
 
@@ -1378,6 +2020,7 @@ const startDraftArrow = (fromState: HTMLElement, clientX: number, clientY: numbe
   shape.labelCollider.classList.add('is-draft')
   shape.path.classList.add('is-draft')
   shape.head.classList.add('is-draft')
+  shape.labelLeader.classList.add('is-draft')
   const snapped = getGridPoint(clientX, clientY)
   const snapPoint = { x: snapped.x, y: snapped.y }
   const from = getStateCenter(fromState)
@@ -1414,6 +2057,7 @@ const finalizeArrow = (toState: HTMLElement) => {
   draftArrow.shape.labelCollider.classList.remove('is-draft')
   draftArrow.shape.path.classList.remove('is-draft')
   draftArrow.shape.head.classList.remove('is-draft')
+  draftArrow.shape.labelLeader.classList.remove('is-draft')
   arrows.push({
     fromId,
     toId,
@@ -1424,6 +2068,7 @@ const finalizeArrow = (toState: HTMLElement) => {
     labelWrap: null,
     labelInputs: null,
     labelVisible: false,
+    labelPlacement: null,
   })
   draftArrow = null
   rerenderStoredArrows()
@@ -1501,6 +2146,17 @@ const animateShadow = () => {
 }
 
 requestAnimationFrame(animateShadow)
+
+function refreshVisibleArrowLabels() {
+  repositionVisibleArrowLabels()
+  arrows.forEach((arrow) => {
+    positionArrowLabel(arrow)
+    updateLabelColliderRect(arrow)
+  })
+}
+
+new ResizeObserver(refreshVisibleArrowLabels).observe(app)
+document.fonts?.ready.then(refreshVisibleArrowLabels).catch(() => {})
 
 app.addEventListener('pointerenter', (event) => {
   hasPointer = true
