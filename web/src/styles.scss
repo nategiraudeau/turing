@@ -156,9 +156,7 @@ body {
   }
 }
 
-/* In-development later feature: connector/leader lines are deliberately disabled in main.ts
-   (`ARROW_LABEL_LEADER_ENABLED = false`). Keep this scaffold quiet until the line design
-   is tested against dense diagrams; production coupling should come from placement and rotation. */
+/* Short ownership connector, only rendered for displaced or ambiguous captions. */
 .tm-arrow-label-leader {
   fill: none;
   stroke: color-mix(in srgb, var(--dot-stroke) 45%, transparent);
@@ -338,128 +336,78 @@ body {
   opacity: 0.15;
 }
 
-/* Transition label (HTML): JS scores candidate (t-on-curve, side, gap) placements that clear states,
-   labels, and every arrow shaft (see `placeArrowLabel` in main.ts). `transform` parks the wrap's
-   bottom-center at the owning arrow and gives diagonal/curved arrows a small local tilt. */
+/* Editing replaces the caption characters without changing its footprint. */
 .tm-arrow-label {
-  --arrow-label-translate-x: -50%;
-  --arrow-label-extra-lift: 1.5px;
-  --arrow-label-rotate: 0deg;
-  --arrow-label-appear-from-lift: 0.5px;
-  --arrow-label-appear-duration: 0.42s;
-  --arrow-label-appear-ease: cubic-bezier(0.22, 1, 0.36, 1);
-
   position: absolute;
-  left: 0;
-  top: 0;
   z-index: 6;
   display: none;
-  box-sizing: border-box;
   width: max-content;
-  max-width: min(100vw, 320px);
-  margin: 0;
-  padding: var(--arrow-label-collider-inset, 10px);
-  transform: translate(
-      var(--arrow-label-translate-x),
-      calc(-100% - var(--arrow-label-extra-lift))
-    )
-    rotate(var(--arrow-label-rotate));
-  transform-origin: 50% 100%;
-  cursor: text;
+  transform: translate(-50%, -50%);
   pointer-events: auto;
 }
+.tm-arrow-label.is-visible { display: block; }
 
-.tm-arrow-label.is-visible {
+.tm-arrow-caption {
   display: block;
-  animation: tm-arrow-label-appear var(--arrow-label-appear-duration) var(--arrow-label-appear-ease)
-    forwards;
-}
-
-.tm-arrow-label-field {
-  --arrow-label-underline-gap: 5px;
-
-  display: flex;
-  flex-direction: row;
-  align-items: center;
-  justify-content: flex-start;
-  gap: 0.03em;
-  box-sizing: border-box;
   margin: 0;
-  padding: 0;
-  padding-bottom: var(--arrow-label-underline-gap);
-  border-bottom: 1px solid color-mix(in srgb, var(--dot-stroke) 45%, transparent);
-  transition: border-color 0.15s ease;
+  padding: 1px 2px;
+  border: 0;
+  border-radius: 2px;
+  background: var(--bg);
+  color: var(--dot-stroke);
+  font: 400 12px/16px 'Google Sans Code', monospace;
+  white-space: nowrap;
+  cursor: pointer;
 }
+.tm-arrow-caption:hover {
+  color: var(--dot-stroke);
+  background: color-mix(in srgb, var(--dot-fill) 12%, var(--bg));
+}
+.tm-arrow-caption:focus-visible { outline: 2px solid var(--dot-fill); outline-offset: 2px; }
 
+.tm-arrow.is-caption-hover .tm-arrow-path,
+.tm-arrow.is-editing .tm-arrow-path { stroke: var(--dot-fill); }
+.tm-arrow.is-caption-hover .tm-arrow-head,
+.tm-arrow.is-editing .tm-arrow-head { fill: var(--dot-fill); stroke: var(--dot-fill); }
+
+.tm-caption-edit {
+  position: absolute;
+  inset: 0;
+  padding: 1px 2px;
+  background: var(--bg);
+  color: var(--dot-stroke);
+  font: 400 12px/16px 'Google Sans Code', monospace;
+}
+.tm-caption-edit[hidden] { display: none; }
+.tm-arrow-label-field {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  height: 16px;
+}
+.tm-arrow-label-field span { width: 1ch; flex: 0 0 1ch; }
 .tm-arrow-label-input {
   box-sizing: border-box;
   width: 1ch;
-  min-width: 0.55em;
+  min-width: 0;
+  height: 16px;
   margin: 0;
   padding: 0;
   border: 0;
   border-radius: 0;
   background: transparent;
-  color: color-mix(in srgb, var(--dot-stroke) 92%, var(--bg));
+  color: inherit;
   font: inherit;
-  font-size: 11px;
-  line-height: 1.15;
   text-align: center;
-  cursor: text;
+}
+.tm-arrow-label-input:focus {
   outline: none;
+  background: var(--dot-hover-bg);
+  box-shadow: 0 1px 0 var(--dot-fill);
 }
-
-.tm-arrow-label-fmt {
-  opacity: 0.42;
-  color: color-mix(in srgb, var(--dot-stroke) 92%, var(--bg));
-  font: inherit;
-  font-size: 11px;
-  line-height: 1.15;
-  user-select: none;
-  pointer-events: none;
-  flex-shrink: 0;
-}
-
-.tm-arrow-label:focus-within .tm-arrow-label-field {
-  border-bottom-color: color-mix(in srgb, var(--dot-fill) 45%, transparent);
-}
-
+.tm-arrow-label-input::placeholder { color: inherit; opacity: 0.65; }
 @media (prefers-reduced-motion: reduce) {
-  .tm-arrow-label.is-visible {
-    display: block;
-    animation: none;
-    opacity: 1;
-    transform: translate(
-        var(--arrow-label-translate-x),
-        calc(-100% - var(--arrow-label-extra-lift))
-      )
-      rotate(var(--arrow-label-rotate));
-  }
-
-  .tm-arrow-label-leader.is-visible {
-    transition: none;
-    opacity: 1;
-  }
-}
-
-@keyframes tm-arrow-label-appear {
-  from {
-    opacity: 0;
-    transform: translate(
-        var(--arrow-label-translate-x),
-        calc(-100% - var(--arrow-label-appear-from-lift))
-      )
-      rotate(var(--arrow-label-rotate));
-  }
-
-  to {
-    opacity: 1;
-    transform: translate(
-        var(--arrow-label-translate-x),
-        calc(-100% - var(--arrow-label-extra-lift))
-      )
-      rotate(var(--arrow-label-rotate));
-  }
+  .tm-arrow-label-leader { transition: none; }
 }
 
 @keyframes tm-state-appear {
